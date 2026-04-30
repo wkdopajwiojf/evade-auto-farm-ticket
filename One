@@ -1,0 +1,156 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+   Name = "nil",
+   Icon = 0, -- Icon in Topbar. Can use Lucide Icons (string) or Roblox Image (number). 0 to use no icon (default).
+   LoadingTitle = "nil",
+   LoadingSubtitle = "nil",
+   ShowText = "nil", -- for mobile users to unhide Rayfield, change if you'd like
+   Theme = "Default", -- Check https://docs.sirius.menu/rayfield/configuration/themes
+
+   ToggleUIKeybind = "K", -- The keybind to toggle the UI visibility (string like "K" or Enum.KeyCode)
+
+   DisableRayfieldPrompts = false,
+   DisableBuildWarnings = false, -- Prevents Rayfield from emitting warnings when the script has a version mismatch with the interface.
+
+   -- ScriptID = "sid_xxxxxxxxxxxx", -- Your Script ID from developer.sirius.menu — enables analytics, managed keys, and script hosting
+
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = true, -- Create a custom folder for your hub/game
+      FileName = "nil"
+   },
+
+   Discord = {
+      Enabled = false, -- Prompt the user to join your Discord server if their executor supports it
+      Invite = "noinvitelink", -- The Discord invite code, do not include Discord.gg/. E.g. Discord.gg/ABCD would be ABCD
+      RememberJoins = true -- Set this to false to make them join the Discord every time they load it up
+   },
+
+   KeySystem = false, -- Set this to true to use our key system
+   KeySettings = {
+      Title = "Untitled",
+      Subtitle = "Key System",
+      Note = "No method of obtaining the key is provided", -- Use this to tell the user how to get a key
+      FileName = "Key", -- It is recommended to use something unique, as other scripts using Rayfield may overwrite your key file
+      SaveKey = true, -- The user's key will be saved, but if you change the key, they will be unable to use your script
+      GrabKeyFromSite = false, -- If this is true, set Key below to the RAW site you would like Rayfield to get the key from
+      Key = {"Hello"} -- List of keys that the system will accept, can be RAW file links (pastebin, github, etc.) or simple strings ("hello", "key22")
+   }
+})
+----------------------------Auto farm Tab----------------------------------
+local Tab = Window:CreateTab("auto farm", nil) -- Title, Image
+-------------------Auto farm toggle function-------------------------------
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+
+local TARGET_FOLDER = workspace:WaitForChild("Game"):WaitForChild("Effects"):WaitForChild("Tickets")
+
+local running = false
+
+-- ดึงตำแหน่ง Model
+local function getModelPosition(model)
+    if model.PrimaryPart then
+        return model.PrimaryPart.Position
+    else
+        local part = model:FindFirstChildWhichIsA("BasePart")
+        if part then
+            return part.Position
+        end
+    end
+    return nil
+end
+
+local RunService = game:GetService("RunService")
+
+local RunService = game:GetService("RunService")
+
+local function teleportUntilGone(model)
+    local char = lp.Character or lp.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart")
+
+    -- 🔒 snapshot ตำแหน่ง "ครั้งเดียว"
+    local basePos
+    if model.PrimaryPart then
+        basePos = model.PrimaryPart.Position
+    else
+        local part = model:FindFirstChildWhichIsA("BasePart")
+        if part then
+            basePos = part.Position
+        end
+    end
+
+    if not basePos then return end
+
+    -- 👉 ปรับ Y -10
+    local targetCF = CFrame.new(basePos + Vector3.new(0, -13, 0))
+
+    local bindName = "RuntimeTP_" .. tostring(model)
+
+    -- 💥 override ทุกเฟรม แต่ใช้ตำแหน่ง "เดิม"
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
+        if model and model.Parent then
+            hrp.CFrame = targetCF
+        end
+    end)
+
+    -- 🔁 รอจน model หาย
+    while model and model.Parent do
+        RunService.RenderStepped:Wait()
+    end
+
+    RunService:UnbindFromRenderStep(bindName)
+end
+
+-- loop หลักแบบ snapshot
+local function startFarm()
+    while running do
+        local snapshot = {}
+
+        -- 1. สแกน + 2. บันทึกตำแหน่งทั้งหมด
+        for _, model in pairs(TARGET_FOLDER:GetChildren()) do
+            if model:IsA("Model") then
+                local pos = getModelPosition(model)
+                if pos then
+                    table.insert(snapshot, model)
+                end
+            end
+        end
+
+        -- ถ้าไม่มีอะไร → รอสแกนใหม่
+        if #snapshot == 0 then
+            task.wait(0.5)
+            continue
+        end
+
+        -- 3. วาปตามตำแหน่งที่บันทึกไว้
+        for i, model in ipairs(snapshot) do
+    		if not running then break end
+
+    		teleportUntilGone(model)
+    		task.wait(0.1)
+		end
+
+        -- 5. เคลียร์ snapshot (จริงๆ local อยู่แล้ว แค่ปล่อยให้ loop สร้างใหม่)
+        table.clear(snapshot)
+
+        task.wait(0.3)
+
+    end
+end
+
+-- ===== RAYFIELD TOGGLE =====
+Tab:CreateToggle({
+    Name = "Auto honey",
+    CurrentValue = false,
+    Callback = function(Value)
+        running = Value
+
+        if running then
+            task.spawn(startFarm)
+        end
+    end,
+})
+-------------------end of auto farm toggle--------------------
+local Divider = Tab:CreateDivider()
