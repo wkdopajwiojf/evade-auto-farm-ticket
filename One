@@ -1,349 +1,371 @@
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
-   Name = "nil",
-   Icon = 0, -- Icon in Topbar. Can use Lucide Icons (string) or Roblox Image (number). 0 to use no icon (default).
-   LoadingTitle = "nil",
-   LoadingSubtitle = "nil",
-   ShowText = "nil", -- for mobile users to unhide Rayfield, change if you'd like
-   Theme = "Default", -- Check https://docs.sirius.menu/rayfield/configuration/themes
-
-   ToggleUIKeybind = "K", -- The keybind to toggle the UI visibility (string like "K" or Enum.KeyCode)
-
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false, -- Prevents Rayfield from emitting warnings when the script has a version mismatch with the interface.
-
-   -- ScriptID = "sid_xxxxxxxxxxxx", -- Your Script ID from developer.sirius.menu — enables analytics, managed keys, and script hosting
-
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = true, -- Create a custom folder for your hub/game
-      FileName = "nil"
-   },
-
-   Discord = {
-      Enabled = false, -- Prompt the user to join your Discord server if their executor supports it
-      Invite = "noinvitelink", -- The Discord invite code, do not include Discord.gg/. E.g. Discord.gg/ABCD would be ABCD
-      RememberJoins = true -- Set this to false to make them join the Discord every time they load it up
-   },
-
-   KeySystem = false, -- Set this to true to use our key system
-   KeySettings = {
-      Title = "Untitled",
-      Subtitle = "Key System",
-      Note = "No method of obtaining the key is provided", -- Use this to tell the user how to get a key
-      FileName = "Key", -- It is recommended to use something unique, as other scripts using Rayfield may overwrite your key file
-      SaveKey = true, -- The user's key will be saved, but if you change the key, they will be unable to use your script
-      GrabKeyFromSite = false, -- If this is true, set Key below to the RAW site you would like Rayfield to get the key from
-      Key = {"Hello"} -- List of keys that the system will accept, can be RAW file links (pastebin, github, etc.) or simple strings ("hello", "key22")
-   }
+    Name = "nil",
+    Icon = 0,
+    LoadingTitle = "nil",
+    LoadingSubtitle = "nil",
+    ShowText = "nil",
+    Theme = "Default",
+    ToggleUIKeybind = "K",
+    DisableRayfieldPrompts = false,
+    DisableBuildWarnings = false,
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = true,
+        FileName = "nil",
+    },
+    Discord = {
+        Enabled = false,
+        Invite = "noinvitelink",
+        RememberJoins = true,
+    },
+    KeySystem = false,
+    KeySettings = {
+        Title = "Untitled",
+        Subtitle = "Key System",
+        Note = "No method of obtaining the key is provided",
+        FileName = "Key",
+        SaveKey = true,
+        GrabKeyFromSite = false,
+        Key = { "Hello" },
+    },
 })
-----------------------------Auto farm Tab----------------------------------
-local Tab = Window:CreateTab("auto farm", nil) -- Title, Image
--------------------Auto farm toggle function-------------------------------
-local Players = game:GetService("Players")
-local lp = Players.LocalPlayer
+
+------------------------------------------------------------------------
+-- Services & player references
+------------------------------------------------------------------------
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local TARGET_FOLDER = workspace:WaitForChild("Game"):WaitForChild("Effects"):WaitForChild("Tickets")
+local lp = Players.LocalPlayer
+local currentCharacter = nil
+local currentHRP = nil
 
-local running = false
-
--- ดึงตำแหน่ง Model
-local function getModelPosition(model)
-    if model.PrimaryPart then
-        return model.PrimaryPart.Position
-    else
-        local part = model:FindFirstChildWhichIsA("BasePart")
-        if part then
-            return part.Position
-        end
-    end
-    return nil
+local function updateCharacter(char)
+    currentCharacter = char
+    currentHRP = char:WaitForChild("HumanoidRootPart")
+    print("[SYSTEM] Character updated")
 end
 
-local RunService = game:GetService("RunService")
+lp.CharacterAdded:Connect(updateCharacter)
 
-local RunService = game:GetService("RunService")
+if lp.Character then
+    updateCharacter(lp.Character)
+end
 
-local function teleportUntilGone(model)
-    local char = lp.Character or lp.CharacterAdded:Wait()
-    local hrp = char:WaitForChild("HumanoidRootPart")
+------------------------------------------------------------------------
+-- Folder references
+------------------------------------------------------------------------
+local BEE_FOLDER    = workspace:WaitForChild("Game"):WaitForChild("Players")
+local TARGET_FOLDER = workspace:WaitForChild("Game"):WaitForChild("Effects"):WaitForChild("Tickets")
+local ChangeMode    = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Player"):WaitForChild("ChangePlayerMode")
 
-    -- 🔒 snapshot ตำแหน่ง "ครั้งเดียว"
-    local basePos
-    if model.PrimaryPart then
-        basePos = model.PrimaryPart.Position
-    else
-        local part = model:FindFirstChildWhichIsA("BasePart")
-        if part then
-            basePos = part.Position
-        end
+------------------------------------------------------------------------
+-- Auto Farm Tab
+------------------------------------------------------------------------
+local Tab = Window:CreateTab("auto farm", nil)
+
+------------------------------------------------------------------------
+-- Shared state
+------------------------------------------------------------------------
+getgenv().TicketBusy = false
+getgenv().BeeBusy    = false
+
+------------------------------------------------------------------------
+-- Helpers
+------------------------------------------------------------------------
+local function isBee(model)
+    return model:IsA("Model") and model.Name:lower():find("bee")
+end
+
+local function getBeePosition(model)
+    local part = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+    return part and part.Position
+end
+
+local function getModelPosition(model)
+    local part = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+    return part and part.Position
+end
+
+------------------------------------------------------------------------
+-- Follow bee until it despawns (smoothed velocity + auto ping prediction)
+------------------------------------------------------------------------
+local SMOOTH_FACTOR = 0.25  -- EMA weight สำหรับ velocity
+local PING_SMOOTH   = 0.2   -- EMA weight สำหรับ ping, ต่ำ = กรอง spike ได้ดีกว่า
+
+local smoothPing = lp:GetNetworkPing()  -- seed ด้วยค่าปิงแรก
+
+local function followBeeUntilGone(model)
+    if not currentHRP then
+        getgenv().TicketBusy = false
+        getgenv().BeeBusy    = false
+        return
     end
 
-    if not basePos then return end
+    getgenv().TicketBusy = true
+    getgenv().BeeBusy    = true
 
-    -- 👉 ปรับ Y -10
-    local targetCF = CFrame.new(basePos + Vector3.new(0, -13, 0))
+    local bindName  = "FollowBee_" .. tostring(model)
+    local lastPos   = getBeePosition(model)
+    local smoothVel = Vector3.new(0, 0, 0)
 
-    local bindName = "RuntimeTP_" .. tostring(model)
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function(dt)
+        if not (model and model.Parent and currentHRP and currentHRP.Parent) then return end
 
-    -- 💥 override ทุกเฟรม แต่ใช้ตำแหน่ง "เดิม"
-    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
-        if model and model.Parent then
-            hrp.CFrame = targetCF
+        local currentPos = getBeePosition(model)
+        if not currentPos then return end
+
+        if lastPos and dt > 0 then
+            -- smooth ping ทุก frame กัน spike
+            smoothPing = smoothPing + (lp:GetNetworkPing() - smoothPing) * PING_SMOOTH
+
+            -- raw velocity → smooth velocity
+            local rawVel = (currentPos - lastPos) / dt
+            smoothVel    = smoothVel:Lerp(rawVel, SMOOTH_FACTOR)
+
+            -- วาปล่วงหน้าตาม ping จริง
+            local predictedPos = currentPos + smoothVel * smoothPing
+            currentHRP.CFrame  = CFrame.new(predictedPos)
         end
+
+        lastPos = currentPos
     end)
 
-    -- 🔁 รอจน model หาย
     while model and model.Parent do
+        if not currentHRP or not currentHRP.Parent then break end
         RunService.RenderStepped:Wait()
     end
 
     RunService:UnbindFromRenderStep(bindName)
+    getgenv().TicketBusy = false
+    getgenv().BeeBusy    = false
 end
 
--- loop หลักแบบ snapshot
-local function startFarm()
-    while running do
-        local snapshot = {}
+------------------------------------------------------------------------
+-- Teleport to ticket until it despawns
+------------------------------------------------------------------------
+local function teleportUntilGone(model)
+    -- FIX #1 (same pattern): reset both flags on early return
+    if not currentHRP then
+        getgenv().TicketBusy = false
+        getgenv().BeeBusy    = false
+        return
+    end
 
-        -- 1. สแกน + 2. บันทึกตำแหน่งทั้งหมด
-        for _, model in pairs(TARGET_FOLDER:GetChildren()) do
-            if model:IsA("Model") then
-                local pos = getModelPosition(model)
-                if pos then
-                    table.insert(snapshot, model)
-                end
+    getgenv().TicketBusy = true
+
+    local basePos = getModelPosition(model)
+    if not basePos then
+        getgenv().TicketBusy = false
+        getgenv().BeeBusy    = false  -- FIX #2: restore BeeBusy reset that was incorrectly removed
+        return
+    end
+
+    local targetCF = CFrame.new(basePos + Vector3.new(0, -10, 0))
+    local bindName = "RuntimeTP_" .. tostring(model)
+
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
+        if model and model.Parent and currentHRP and currentHRP.Parent then
+            currentHRP.CFrame = targetCF
+        end
+    end)
+
+    while model and model.Parent do
+        if not currentHRP or not currentHRP.Parent then break end
+        RunService.RenderStepped:Wait()
+    end
+
+    RunService:UnbindFromRenderStep(bindName)
+    getgenv().TicketBusy = false
+    getgenv().BeeBusy    = false  -- FIX #2
+end
+
+------------------------------------------------------------------------
+-- Main farm loop
+------------------------------------------------------------------------
+local farmRunning = false
+
+local function startFarm()
+    while farmRunning do
+        -- FIX #3: guard BeeBusy before spawning a new bee follower
+        for _, model in ipairs(BEE_FOLDER:GetChildren()) do
+            if not farmRunning then break end
+            if isBee(model) and not getgenv().BeeBusy then
+                task.spawn(followBeeUntilGone, model)
+                task.wait(0.05)
             end
         end
 
-        -- ถ้าไม่มีอะไร → รอสแกนใหม่
+        -- Collect tickets
+        local snapshot = {}
+        for _, model in ipairs(TARGET_FOLDER:GetChildren()) do
+            if model:IsA("Model") and getModelPosition(model) then
+                table.insert(snapshot, model)
+            end
+        end
+
         if #snapshot == 0 then
             task.wait(0.5)
             continue
         end
 
-        -- 3. วาปตามตำแหน่งที่บันทึกไว้
-        for i, model in ipairs(snapshot) do
-    		if not running then break end
-
-    		teleportUntilGone(model)
-    		task.wait(0.1)
-		end
-
-        -- 5. เคลียร์ snapshot (จริงๆ local อยู่แล้ว แค่ปล่อยให้ loop สร้างใหม่)
-        table.clear(snapshot)
+        for _, model in ipairs(snapshot) do
+            if not farmRunning then break end
+            teleportUntilGone(model)
+            task.wait(0.1)
+        end
 
         task.wait(0.3)
-
     end
 end
 
--- ===== RAYFIELD TOGGLE =====
 Tab:CreateToggle({
     Name = "Auto honey",
     CurrentValue = false,
-    Callback = function(Value)
-        running = Value
-
-        if running then
+    Callback = function(value)
+        farmRunning = value
+        if farmRunning then
             task.spawn(startFarm)
         end
     end,
 })
--------------------end of auto farm ticket toggle--------------------
-local Divider = Tab:CreateDivider()
--------------------auto farm cash toggle ---------------------
-local function log(msg)
-    print("[AutoRevive] " .. msg)
-end
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+Tab:CreateDivider()
 
-local lp = Players.LocalPlayer
-local Interact = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Character"):WaitForChild("Interact")
+------------------------------------------------------------------------
+-- Safe Mode
+------------------------------------------------------------------------
+local safeMode = false
+local safePos  = nil
 
-local running = false
-local busy = false
-
--- runtime teleport (ยึดตำแหน่ง)
-local function runtimeHold(targetPos, duration)
-    local char = lp.Character or lp.CharacterAdded:Wait()
-    local hrp = char:WaitForChild("HumanoidRootPart")
-
-    local bindName = "HoldTP_" .. tostring(math.random())
-
-    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
-        hrp.CFrame = targetPos
-    end)
-
-    local start = tick()
-    while tick() - start < duration do
-        RunService.RenderStepped:Wait()
-    end
-
-    RunService:UnbindFromRenderStep(bindName)
-end
-
--- runtime ตาม player
-local function followPlayerRuntime(targetPlayer, duration)
-    local char = lp.Character or lp.CharacterAdded:Wait()
-    local hrp = char:WaitForChild("HumanoidRootPart")
-
-    local bindName = "FollowTP_" .. targetPlayer.Name
-
-    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
-        if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-            local targetHRP = targetPlayer.Character.HumanoidRootPart
-            hrp.CFrame = targetHRP.CFrame
+local function holdAtPosition(pos)
+    RunService:UnbindFromRenderStep("SafeModeHold")
+    RunService:BindToRenderStep("SafeModeHold", Enum.RenderPriority.Character.Value + 1, function()
+        if safeMode and not getgenv().TicketBusy and currentHRP and currentHRP.Parent then
+            currentHRP.CFrame = pos
         end
     end)
-
-    local start = tick()
-    while tick() - start < duration do
-        RunService.RenderStepped:Wait()
-    end
-
-    RunService:UnbindFromRenderStep(bindName)
 end
 
-local function isValidTarget(plr)
-    if plr ~= lp and plr.Character then
-        local char = plr.Character
-        
-        local downed = char:GetAttribute("Downed")
-        local carried = char:GetAttribute("Carried")
-
-        if downed == true and carried ~= true then
-            log("Found valid target: " .. plr.Name)
-            return true
-        else
-            if downed == true and carried == true then
-                log(plr.Name .. " is downed but already carried (skip)")
-            end
-        end
-    end
-    return false
-end
-
-local function carryUntilSuccess(target)
-    local char = target.Character
-    if not char then return false end
-
-    log("Trying to carry " .. target.Name)
-
-    local timeout = 3 -- กันลูปค้าง (วิ)
-    local start = tick()
-
-    while tick() - start < timeout do
-        if not running then return false end
-
-        -- เช็คว่าโดนอุ้มแล้วหรือยัง
-        local carried = char:GetAttribute("Carried")
-        if carried == true then
-            log("Carry success: " .. target.Name)
-            return true
-        end
-
-        -- ยิงซ้ำ
-        Interact:FireServer("Carry", target)
-        log("Retry Carry -> " .. target.Name)
-
-        task.wait(0.15)
-    end
-
-    log("Carry failed (timeout): " .. target.Name)
-    return false
-end
-
-local function getDownedPlayer()
-    for _, plr in pairs(Players:GetPlayers()) do
-        if isValidTarget(plr) then
-            
-            log("Waiting 2 seconds before targeting " .. plr.Name)
-            task.wait(2)
-
-            if isValidTarget(plr) then
-                log("Target locked: " .. plr.Name)
-                return plr
-            else
-                log("Target lost during delay: " .. plr.Name)
-            end
-        end
-    end
-end
-
--- main logic
-local function startReviveFarm()
-    while running do
-        if not busy then
-            local target = getDownedPlayer()
-
-            if target then
-                busy = true
-
-                local targetChar = target.Character
-                local targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-
-                if targetHRP then
-                    -- 1. วาปไปหา
-					log("Teleporting to " .. target.Name)
-                    runtimeHold(targetHRP.CFrame, 0.2)
-
-                    -- 2. อุ้ม
-					log("Carrying " .. target.Name)
-                    local success = carryUntilSuccess(target)
-					if not success then
-    					log("Skip target (carry not working): " .. target.Name)
-    					return
-					end
-
-                    task.wait(0.3)
-
-                    -- 3. วาปขึ้นฟ้า
-					log("Teleporting to sky with " .. target.Name)
-                    local skyPos = targetHRP.CFrame + Vector3.new(0, 100, 0)
-                    runtimeHold(skyPos, 0.3)
-
-                    -- 4. ปล่อย
-					log("Dropping " .. target.Name)
-                    Interact:FireServer("EndCarry")
-
-                    task.wait(0.1)
-
-                    -- 5. ตามตัวตอนตก
-					log("Following " .. target.Name .. " while falling")
-                    followPlayerRuntime(target, 1)
-
-                    -- 6. ชุบ
-					log("Reviving " .. target.Name)
-                    Interact:FireServer("Revive", target)
-
-					 log("Finished cycle for " .. target.Name)
+local function monitorDowned()
+    task.spawn(function()
+        while safeMode do
+            local char = lp.Character
+            if char then
+                if char:GetAttribute("State") == "Downed" then
+                    print("[SafeMode] Downed detected → changing mode")
+                    ChangeMode:FireServer(true)
+                    task.wait(1)
                 end
-
-                task.wait(0.5)
-                busy = false
             end
+            task.wait(0.2)
         end
-
-        task.wait(0.2)
-    end
+    end)
 end
 
--- ===== TOGGLE =====
-Tab:CreateToggle({
-    Name = "Auto Revive Farm",
-    CurrentValue = false,
-    Callback = function(Value)
-        running = Value
+local function monitorCharacterGone()
+    task.spawn(function()
+        local missingTimer = 0
 
-        if running then
-            task.spawn(startReviveFarm)
+        while safeMode do
+            local char = lp.Character
+
+            if char then
+                missingTimer = 0  -- มีอยู่ → reset timer
+            else
+                missingTimer = missingTimer + 0.2  -- nil ไม่ว่ากรณีไหน → นับเลย
+                if missingTimer >= 3 then
+                    print("[SafeMode] Character gone > 3s → respawning")
+                    local args = { [1] = true }
+                    game:GetService("ReplicatedStorage").Events.Player.ChangePlayerMode:FireServer(unpack(args))
+                    missingTimer = 0
+                end
+            end
+
+            task.wait(0.2)
+        end
+    end)
+end
+
+Tab:CreateToggle({
+    Name = "Safe Mode",
+    CurrentValue = false,
+    Callback = function(value)
+        safeMode = value
+
+        if safeMode then
+            -- เริ่ม monitor character gone ทันที ไม่ขึ้นกับ HRP
+            monitorCharacterGone()
+
+            -- setup safePos + monitor downed เฉพาะตอนมี character
+            task.spawn(function()
+                local char = lp.Character or lp.CharacterAdded:Wait()
+                local hrp  = char:WaitForChild("HumanoidRootPart")
+                if not safeMode then return end
+                currentCharacter = char
+                currentHRP       = hrp
+                safePos = currentHRP.CFrame * CFrame.new(0, 500, 0)
+                currentCharacter:PivotTo(safePos)
+                holdAtPosition(safePos)
+                monitorDowned()
+                print("[SafeMode] Enabled")
+            end)
+        else
+            RunService:UnbindFromRenderStep("SafeModeHold")
+            print("[SafeMode] Disabled")
         end
     end,
 })
--------------------end of auto farm ticket toggle--------------------
+
+Tab:CreateDivider()
+
+------------------------------------------------------------------------
+-- Anti AFK
+------------------------------------------------------------------------
+local VirtualUser = game:GetService("VirtualUser")
+
+local antiAFK        = false
+local idleConnection = nil
+
+local function enableAntiAFK()
+    if getconnections then
+        for _, conn in ipairs(getconnections(lp.Idled)) do
+            if conn.Disable then
+                conn:Disable()
+            elseif conn.Disconnect then
+                conn:Disconnect()
+            end
+        end
+        print("[AntiAFK] Disabled default idle connections")
+    else
+        idleConnection = lp.Idled:Connect(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+        print("[AntiAFK] Using VirtualUser fallback")
+    end
+end
+
+local function disableAntiAFK()
+    if idleConnection then
+        idleConnection:Disconnect()
+        idleConnection = nil
+        print("[AntiAFK] Disabled")
+    end
+end
+
+Tab:CreateToggle({
+    Name = "Anti AFK",
+    CurrentValue = false,
+    Callback = function(value)
+        antiAFK = value
+        if antiAFK then
+            enableAntiAFK()
+        else
+            disableAntiAFK()
+        end
+    end,
+})
