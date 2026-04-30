@@ -152,5 +152,198 @@ Tab:CreateToggle({
         end
     end,
 })
--------------------end of auto farm toggle--------------------
+-------------------end of auto farm ticket toggle--------------------
 local Divider = Tab:CreateDivider()
+-------------------auto farm cash toggle ---------------------
+local function log(msg)
+    print("[AutoRevive] " .. msg)
+end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local lp = Players.LocalPlayer
+local Interact = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Character"):WaitForChild("Interact")
+
+local running = false
+local busy = false
+
+-- runtime teleport (ยึดตำแหน่ง)
+local function runtimeHold(targetPos, duration)
+    local char = lp.Character or lp.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart")
+
+    local bindName = "HoldTP_" .. tostring(math.random())
+
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
+        hrp.CFrame = targetPos
+    end)
+
+    local start = tick()
+    while tick() - start < duration do
+        RunService.RenderStepped:Wait()
+    end
+
+    RunService:UnbindFromRenderStep(bindName)
+end
+
+-- runtime ตาม player
+local function followPlayerRuntime(targetPlayer, duration)
+    local char = lp.Character or lp.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart")
+
+    local bindName = "FollowTP_" .. targetPlayer.Name
+
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
+        if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local targetHRP = targetPlayer.Character.HumanoidRootPart
+            hrp.CFrame = targetHRP.CFrame
+        end
+    end)
+
+    local start = tick()
+    while tick() - start < duration do
+        RunService.RenderStepped:Wait()
+    end
+
+    RunService:UnbindFromRenderStep(bindName)
+end
+
+local function isValidTarget(plr)
+    if plr ~= lp and plr.Character then
+        local char = plr.Character
+        
+        local downed = char:GetAttribute("Downed")
+        local carried = char:GetAttribute("Carried")
+
+        if downed == true and carried ~= true then
+            log("Found valid target: " .. plr.Name)
+            return true
+        else
+            if downed == true and carried == true then
+                log(plr.Name .. " is downed but already carried (skip)")
+            end
+        end
+    end
+    return false
+end
+
+local function carryUntilSuccess(target)
+    local char = target.Character
+    if not char then return false end
+
+    log("Trying to carry " .. target.Name)
+
+    local timeout = 3 -- กันลูปค้าง (วิ)
+    local start = tick()
+
+    while tick() - start < timeout do
+        if not running then return false end
+
+        -- เช็คว่าโดนอุ้มแล้วหรือยัง
+        local carried = char:GetAttribute("Carried")
+        if carried == true then
+            log("Carry success: " .. target.Name)
+            return true
+        end
+
+        -- ยิงซ้ำ
+        Interact:FireServer("Carry", target)
+        log("Retry Carry -> " .. target.Name)
+
+        task.wait(0.15)
+    end
+
+    log("Carry failed (timeout): " .. target.Name)
+    return false
+end
+
+local function getDownedPlayer()
+    for _, plr in pairs(Players:GetPlayers()) do
+        if isValidTarget(plr) then
+            
+            log("Waiting 2 seconds before targeting " .. plr.Name)
+            task.wait(2)
+
+            if isValidTarget(plr) then
+                log("Target locked: " .. plr.Name)
+                return plr
+            else
+                log("Target lost during delay: " .. plr.Name)
+            end
+        end
+    end
+end
+
+-- main logic
+local function startReviveFarm()
+    while running do
+        if not busy then
+            local target = getDownedPlayer()
+
+            if target then
+                busy = true
+
+                local targetChar = target.Character
+                local targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+
+                if targetHRP then
+                    -- 1. วาปไปหา
+					log("Teleporting to " .. target.Name)
+                    runtimeHold(targetHRP.CFrame, 0.2)
+
+                    -- 2. อุ้ม
+					log("Carrying " .. target.Name)
+                    local success = carryUntilSuccess(target)
+					if not success then
+    					log("Skip target (carry not working): " .. target.Name)
+    					return
+					end
+
+                    task.wait(0.3)
+
+                    -- 3. วาปขึ้นฟ้า
+					log("Teleporting to sky with " .. target.Name)
+                    local skyPos = targetHRP.CFrame + Vector3.new(0, 100, 0)
+                    runtimeHold(skyPos, 0.3)
+
+                    -- 4. ปล่อย
+					log("Dropping " .. target.Name)
+                    Interact:FireServer("EndCarry")
+
+                    task.wait(0.1)
+
+                    -- 5. ตามตัวตอนตก
+					log("Following " .. target.Name .. " while falling")
+                    followPlayerRuntime(target, 1)
+
+                    -- 6. ชุบ
+					log("Reviving " .. target.Name)
+                    Interact:FireServer("Revive", target)
+
+					 log("Finished cycle for " .. target.Name)
+                end
+
+                task.wait(0.5)
+                busy = false
+            end
+        end
+
+        task.wait(0.2)
+    end
+end
+
+-- ===== TOGGLE =====
+Tab:CreateToggle({
+    Name = "Auto Revive Farm",
+    CurrentValue = false,
+    Callback = function(Value)
+        running = Value
+
+        if running then
+            task.spawn(startReviveFarm)
+        end
+    end,
+})
+-------------------end of auto farm ticket toggle--------------------
