@@ -164,7 +164,7 @@ local function teleportUntilGone(model)
         return
     end
 
-    local targetCF = CFrame.new(basePos + Vector3.new(0, -10, 0))
+    local targetCF = CFrame.new(basePos + Vector3.new(0, -1, 0))
     local bindName = "RuntimeTP_" .. tostring(model)
 
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
