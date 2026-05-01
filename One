@@ -35,17 +35,17 @@ local Window = Rayfield:CreateWindow({
 ------------------------------------------------------------------------
 -- Services & player references
 ------------------------------------------------------------------------
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local lp = Players.LocalPlayer
+local lp               = Players.LocalPlayer
 local currentCharacter = nil
-local currentHRP = nil
+local currentHRP       = nil
 
 local function updateCharacter(char)
     currentCharacter = char
-    currentHRP = char:WaitForChild("HumanoidRootPart")
+    currentHRP       = char:WaitForChild("HumanoidRootPart")
     print("[SYSTEM] Character updated")
 end
 
@@ -56,14 +56,15 @@ if lp.Character then
 end
 
 ------------------------------------------------------------------------
--- Folder references
+-- Folder & remote references
 ------------------------------------------------------------------------
 local BEE_FOLDER    = workspace:WaitForChild("Game"):WaitForChild("Players")
 local TARGET_FOLDER = workspace:WaitForChild("Game"):WaitForChild("Effects"):WaitForChild("Tickets")
 local ChangeMode    = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Player"):WaitForChild("ChangePlayerMode")
+local Interact      = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Character"):WaitForChild("Interact")
 
 ------------------------------------------------------------------------
--- Auto Farm Tab
+-- Tab
 ------------------------------------------------------------------------
 local Tab = Window:CreateTab("auto farm", nil)
 
@@ -90,13 +91,22 @@ local function getModelPosition(model)
     return part and part.Position
 end
 
-------------------------------------------------------------------------
--- Follow bee until it despawns (smoothed velocity + auto ping prediction)
-------------------------------------------------------------------------
-local SMOOTH_FACTOR = 0.25  -- EMA weight สำหรับ velocity
-local PING_SMOOTH   = 0.2   -- EMA weight สำหรับ ping, ต่ำ = กรอง spike ได้ดีกว่า
+local function isDowned(char)
+    return char and char:GetAttribute("Downed") == true
+end
 
-local smoothPing = lp:GetNetworkPing()  -- seed ด้วยค่าปิงแรก
+local function getCarried(char)
+    return char:GetAttribute("Carried") == true
+end
+
+------------------------------------------------------------------------
+-- Follow bee (smoothed velocity + auto ping prediction)
+------------------------------------------------------------------------
+local SMOOTH_FACTOR    = 0.25
+local PING_SMOOTH      = 0.2
+local PREDICT_MULTIPLY = 1.5
+
+local smoothPing = lp:GetNetworkPing()
 
 local function followBeeUntilGone(model)
     if not currentHRP then
@@ -119,15 +129,12 @@ local function followBeeUntilGone(model)
         if not currentPos then return end
 
         if lastPos and dt > 0 then
-            -- smooth ping ทุก frame กัน spike
             smoothPing = smoothPing + (lp:GetNetworkPing() - smoothPing) * PING_SMOOTH
 
-            -- raw velocity → smooth velocity
             local rawVel = (currentPos - lastPos) / dt
             smoothVel    = smoothVel:Lerp(rawVel, SMOOTH_FACTOR)
 
-            -- วาปล่วงหน้าตาม ping จริง
-            local predictedPos = currentPos + smoothVel * smoothPing
+            local predictedPos = currentPos + smoothVel * (smoothPing * PREDICT_MULTIPLY)
             currentHRP.CFrame  = CFrame.new(predictedPos)
         end
 
@@ -148,7 +155,6 @@ end
 -- Teleport to ticket until it despawns
 ------------------------------------------------------------------------
 local function teleportUntilGone(model)
-    -- FIX #1 (same pattern): reset both flags on early return
     if not currentHRP then
         getgenv().TicketBusy = false
         getgenv().BeeBusy    = false
@@ -160,7 +166,7 @@ local function teleportUntilGone(model)
     local basePos = getModelPosition(model)
     if not basePos then
         getgenv().TicketBusy = false
-        getgenv().BeeBusy    = false  -- FIX #2: restore BeeBusy reset that was incorrectly removed
+        getgenv().BeeBusy    = false
         return
     end
 
@@ -180,17 +186,16 @@ local function teleportUntilGone(model)
 
     RunService:UnbindFromRenderStep(bindName)
     getgenv().TicketBusy = false
-    getgenv().BeeBusy    = false  -- FIX #2
+    getgenv().BeeBusy    = false
 end
 
 ------------------------------------------------------------------------
--- Main farm loop
+-- Auto Honey
 ------------------------------------------------------------------------
 local farmRunning = false
 
 local function startFarm()
     while farmRunning do
-        -- FIX #3: guard BeeBusy before spawning a new bee follower
         for _, model in ipairs(BEE_FOLDER:GetChildren()) do
             if not farmRunning then break end
             if isBee(model) and not getgenv().BeeBusy then
@@ -199,7 +204,6 @@ local function startFarm()
             end
         end
 
-        -- Collect tickets
         local snapshot = {}
         for _, model in ipairs(TARGET_FOLDER:GetChildren()) do
             if model:IsA("Model") and getModelPosition(model) then
@@ -254,12 +258,10 @@ local function monitorDowned()
     task.spawn(function()
         while safeMode do
             local char = lp.Character
-            if char then
-                if char:GetAttribute("State") == "Downed" then
-                    print("[SafeMode] Downed detected → changing mode")
-                    ChangeMode:FireServer(true)
-                    task.wait(1)
-                end
+            if char and char:GetAttribute("State") == "Downed" then
+                print("[SafeMode] Downed detected → changing mode")
+                ChangeMode:FireServer(true)
+                task.wait(1)
             end
             task.wait(0.2)
         end
@@ -269,22 +271,18 @@ end
 local function monitorCharacterGone()
     task.spawn(function()
         local missingTimer = 0
-
         while safeMode do
-            local char = lp.Character
-
-            if char then
-                missingTimer = 0  -- มีอยู่ → reset timer
+            if lp.Character then
+                missingTimer = 0
             else
-                missingTimer = missingTimer + 0.2  -- nil ไม่ว่ากรณีไหน → นับเลย
+                missingTimer = missingTimer + 0.2
                 if missingTimer >= 3 then
                     print("[SafeMode] Character gone > 3s → respawning")
                     local args = { [1] = true }
-                    game:GetService("ReplicatedStorage").Events.Player.ChangePlayerMode:FireServer(unpack(args))
+                    ReplicatedStorage.Events.Player.ChangePlayerMode:FireServer(unpack(args))
                     missingTimer = 0
                 end
             end
-
             task.wait(0.2)
         end
     end)
@@ -297,17 +295,15 @@ Tab:CreateToggle({
         safeMode = value
 
         if safeMode then
-            -- เริ่ม monitor character gone ทันที ไม่ขึ้นกับ HRP
             monitorCharacterGone()
 
-            -- setup safePos + monitor downed เฉพาะตอนมี character
             task.spawn(function()
                 local char = lp.Character or lp.CharacterAdded:Wait()
                 local hrp  = char:WaitForChild("HumanoidRootPart")
                 if not safeMode then return end
                 currentCharacter = char
                 currentHRP       = hrp
-                safePos = currentHRP.CFrame * CFrame.new(0, 500, 0)
+                safePos          = currentHRP.CFrame * CFrame.new(0, 200, 0)
                 currentCharacter:PivotTo(safePos)
                 holdAtPosition(safePos)
                 monitorDowned()
@@ -323,10 +319,145 @@ Tab:CreateToggle({
 Tab:CreateDivider()
 
 ------------------------------------------------------------------------
+-- Auto Revive
+------------------------------------------------------------------------
+local reviveRunning = false
+local isReviving    = false
+
+local function teleportToAndRevive(player)
+    local char = player.Character
+    if not char or not currentHRP then
+        isReviving = false
+        return
+    end
+
+    local bindName = "ReviveTP_" .. player.Name
+
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
+        if char and char.Parent and currentHRP and currentHRP.Parent then
+            local h = char:FindFirstChild("HumanoidRootPart")
+            if h then
+                currentHRP.CFrame = CFrame.new(h.Position + Vector3.new(0, 0, 0))
+            end
+        end
+    end)
+
+    while reviveRunning and char and char.Parent and isDowned(char) do
+        Interact:FireServer("Revive", nil, player.Name)
+        Interact:FireServer("Revive", true, player.Name)
+        task.wait(0.1)
+    end
+
+    RunService:UnbindFromRenderStep(bindName)
+    task.wait(0.5)
+    isReviving = false
+end
+
+local function handleTarget(player)
+    isReviving = true
+
+    local char = player.Character
+    if not char then
+        isReviving = false
+        return
+    end
+
+    local carried = getCarried(char)
+
+    if not carried then
+        local elapsed = 0
+        while elapsed < 3 and reviveRunning do
+            if not isDowned(char) then
+                isReviving = false
+                return
+            end
+            if getCarried(char) then
+                carried = true
+                break
+            end
+            task.wait(0.1)
+            elapsed = elapsed + 0.1
+        end
+    end
+
+    if not reviveRunning then
+        isReviving = false
+        return
+    end
+
+    if carried then
+        while reviveRunning do
+            if not isDowned(char) then
+                isReviving = false
+                return
+            end
+            if not getCarried(char) then break end
+            task.wait(0.1)
+        end
+    end
+
+    if not reviveRunning then
+        isReviving = false
+        return
+    end
+
+    teleportToAndRevive(player)
+end
+
+local function getNearestValidTarget()
+    if not currentHRP then return nil end
+
+    local nearest = nil
+    local minDist = math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= lp and player.Character then
+            local char = player.Character
+            if isDowned(char) then
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local dist = (hrp.Position - currentHRP.Position).Magnitude
+                    if dist < minDist then
+                        minDist = dist
+                        nearest = player
+                    end
+                end
+            end
+        end
+    end
+
+    return nearest
+end
+
+local function startReviveLoop()
+    while reviveRunning do
+        if not isReviving then
+            local target = getNearestValidTarget()
+            if target then
+                task.spawn(handleTarget, target)
+            end
+        end
+        task.wait(0.3)
+    end
+end
+
+Tab:CreateToggle({
+    Name = "Auto Revive",
+    CurrentValue = false,
+    Callback = function(value)
+        reviveRunning = value
+        if reviveRunning then
+            task.spawn(startReviveLoop)
+        end
+    end,
+})
+
+Tab:CreateDivider()
+
+------------------------------------------------------------------------
 -- Anti AFK
 ------------------------------------------------------------------------
-local VirtualUser = game:GetService("VirtualUser")
-
+local VirtualUser    = game:GetService("VirtualUser")
 local antiAFK        = false
 local idleConnection = nil
 
