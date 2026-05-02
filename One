@@ -75,6 +75,8 @@ getgenv().TicketBusy = false
 getgenv().BeeBusy    = false
 
 local lastTicketPos = nil  -- ตำแหน่ง ticket ล่าสุดที่วาปไป
+local safeMode      = false
+local safePos       = nil
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -157,11 +159,17 @@ end
 -- Safe position helpers (defined early — used by teleportUntilGone)
 ------------------------------------------------------------------------
 local function updateSafePosFromTicket(pos)
-    if not safeMode or not currentHRP then return end
+    if not safeMode then return end
     lastTicketPos = pos
     safePos       = CFrame.new(pos + Vector3.new(0, 300, 0))
-    holdAtPosition(safePos)
-    print("[SafeMode] Safe pos updated from ticket →", safePos.Position)
+    print("SafeMode Safe pos อัพเดต ticket →", safePos.Position)
+end
+
+local function updateSafePosFromRevive(pos)
+    if not safeMode then return end
+    lastTicketPos = pos
+    safePos       = CFrame.new(pos + Vector3.new(0, 300, 0))
+    print("SafeMode Safe อัพเดต revive →", safePos.Position)
 end
 
 ------------------------------------------------------------------------
@@ -183,10 +191,8 @@ local function teleportUntilGone(model)
         return
     end
 
-    local targetCF  = CFrame.new(basePos + Vector3.new(0, 0, 0))
-    local bindName  = "RuntimeTP_" .. tostring(model)
-    lastTicketPos   = basePos  -- บันทึกตำแหน่ง ticket ล่าสุด
-    updateSafePosFromTicket(basePos)
+    local targetCF = CFrame.new(basePos + Vector3.new(0, 0, 0))
+    local bindName = "RuntimeTP_" .. tostring(model)
 
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
         if model and model.Parent and currentHRP and currentHRP.Parent then
@@ -202,6 +208,10 @@ local function teleportUntilGone(model)
     RunService:UnbindFromRenderStep(bindName)
     getgenv().TicketBusy = false
     getgenv().BeeBusy    = false
+
+    -- อัปเดต safePos หลังเก็บ ticket เสร็จ
+    lastTicketPos = basePos
+    updateSafePosFromTicket(basePos)
 end
 
 ------------------------------------------------------------------------
@@ -257,16 +267,45 @@ Tab:CreateDivider()
 ------------------------------------------------------------------------
 -- Safe Mode
 ------------------------------------------------------------------------
-local safeMode = false
-local safePos  = nil
 
-local function holdAtPosition(pos)
-    RunService:UnbindFromRenderStep("SafeModeHold")
-    RunService:BindToRenderStep("SafeModeHold", Enum.RenderPriority.Character.Value + 1, function()
-        if safeMode and not getgenv().TicketBusy and currentHRP and currentHRP.Parent then
-            currentHRP.CFrame = pos
+local function startHoldLoop()
+    task.spawn(function()
+        local wasBusy = false
+        while safeMode do
+            local isBusy = getgenv().TicketBusy
+            if safePos and currentHRP and currentHRP.Parent then
+                if isBusy then
+                    -- กำลัง farm/revive อยู่ → แค่ track ว่า busy
+                    wasBusy = true
+                else
+                    if wasBusy then
+                        -- เพิ่งหมด busy → teleport กลับขึ้น safePos ใหม่ทันที
+                        currentHRP.CFrame = safePos
+                        wasBusy = false
+                    else
+                        -- ปกติ → hold ค้างไว้
+                        currentHRP.CFrame = safePos
+                    end
+                end
+            end
+            task.wait(0.05)
         end
     end)
+end
+
+local function applySafePos(char, hrp)
+    if not safeMode then return end
+    currentCharacter = char
+    currentHRP       = hrp
+
+    if lastTicketPos then
+        safePos = CFrame.new(lastTicketPos + Vector3.new(0, 300, 0))
+    else
+        safePos = CFrame.new(currentHRP.Position + Vector3.new(0, 300, 0))
+    end
+
+    currentHRP.CFrame = safePos
+    print("[SafeMode] Position set →", safePos.Position)
 end
 
 local function monitorDowned()
@@ -303,22 +342,7 @@ local function monitorCharacterGone()
     end)
 end
 
-local function setupSafePosition(char, hrp)
-    if not safeMode then return end
-    currentCharacter = char
-    currentHRP       = hrp
 
-    -- ใช้ตำแหน่ง ticket ล่าสุด Y+300 ถ้ามี ไม่งั้น fallback ตำแหน่ง character
-    if lastTicketPos then
-        safePos = CFrame.new(lastTicketPos + Vector3.new(0, 300, 0))
-    else
-        safePos = currentHRP.CFrame * CFrame.new(0, 300, 0)
-    end
-
-    currentCharacter:PivotTo(safePos)
-    holdAtPosition(safePos)
-    print("[SafeMode] Position updated →", safePos.Position)
-end
 
 Tab:CreateToggle({
     Name = "Safe Mode",
@@ -329,25 +353,24 @@ Tab:CreateToggle({
         if safeMode then
             monitorCharacterGone()
             monitorDowned()
+            startHoldLoop()
 
-            -- setup ตำแหน่งครั้งแรก
             task.spawn(function()
                 local char = lp.Character or lp.CharacterAdded:Wait()
                 local hrp  = char:WaitForChild("HumanoidRootPart")
-                setupSafePosition(char, hrp)
+                applySafePos(char, hrp)
             end)
 
-            -- อัปเดตตำแหน่งใหม่ทุกครั้งที่เกิดใหม่
             lp.CharacterAdded:Connect(function(char)
                 if not safeMode then return end
                 local hrp = char:WaitForChild("HumanoidRootPart")
-                task.wait(0.1) -- รอ character load
-                setupSafePosition(char, hrp)
+                task.wait(0.1)
+                applySafePos(char, hrp)
             end)
 
             print("[SafeMode] Enabled")
         else
-            RunService:UnbindFromRenderStep("SafeModeHold")
+            safePos = nil
             print("[SafeMode] Disabled")
         end
     end,
@@ -370,11 +393,14 @@ local function teleportToAndRevive(player)
 
     local bindName = "ReviveTP_" .. player.Name
 
+    local lastRevivePos = nil
+
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
         if char and char.Parent and currentHRP and currentHRP.Parent then
             local h = char:FindFirstChild("HumanoidRootPart")
             if h then
-                currentHRP.CFrame = CFrame.new(h.Position + Vector3.new(0, 0, 0))
+                currentHRP.CFrame = CFrame.new(h.Position)
+                lastRevivePos = h.Position
             end
         end
     end)
@@ -386,6 +412,12 @@ local function teleportToAndRevive(player)
     end
 
     RunService:UnbindFromRenderStep(bindName)
+
+    -- อัปเดต safePos หลังชุบเสร็จ
+    if lastRevivePos then
+        updateSafePosFromRevive(lastRevivePos)
+    end
+
     task.wait(0.5)
     isReviving = false
 end
