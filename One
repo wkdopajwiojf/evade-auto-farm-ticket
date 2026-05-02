@@ -162,14 +162,14 @@ local function updateSafePosFromTicket(pos)
     if not safeMode then return end
     lastTicketPos = pos
     safePos       = CFrame.new(pos + Vector3.new(0, 300, 0))
-    print("SafeMode Safe pos อัพเดต ticket →", safePos.Position)
+    print("[SafeMode] Safe pos updated from ticket →", safePos.Position)
 end
 
 local function updateSafePosFromRevive(pos)
     if not safeMode then return end
     lastTicketPos = pos
     safePos       = CFrame.new(pos + Vector3.new(0, 300, 0))
-    print("SafeMode Safe อัพเดต revive →", safePos.Position)
+    print("[SafeMode] Safe pos updated from revive →", safePos.Position)
 end
 
 ------------------------------------------------------------------------
@@ -391,8 +391,7 @@ local function teleportToAndRevive(player)
         return
     end
 
-    local bindName = "ReviveTP_" .. player.Name
-
+    local bindName      = "ReviveTP_" .. player.Name
     local lastRevivePos = nil
 
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.Character.Value + 1, function()
@@ -400,12 +399,13 @@ local function teleportToAndRevive(player)
             local h = char:FindFirstChild("HumanoidRootPart")
             if h then
                 currentHRP.CFrame = CFrame.new(h.Position)
-                lastRevivePos = h.Position
+                lastRevivePos     = h.Position
             end
         end
     end)
 
-    while reviveRunning and char and char.Parent and isDowned(char) do
+    -- spam revive แต่หยุดทันทีถ้าโดน carried ระหว่างชุบ
+    while reviveRunning and char and char.Parent and isDowned(char) and not getCarried(char) do
         Interact:FireServer("Revive", nil, player.Name)
         Interact:FireServer("Revive", true, player.Name)
         task.wait(0.1)
@@ -413,7 +413,6 @@ local function teleportToAndRevive(player)
 
     RunService:UnbindFromRenderStep(bindName)
 
-    -- อัปเดต safePos หลังชุบเสร็จ
     if lastRevivePos then
         updateSafePosFromRevive(lastRevivePos)
     end
@@ -431,19 +430,16 @@ local function handleTarget(player)
         return
     end
 
-    local carried = getCarried(char)
-
-    if not carried then
+    -- ถ้าไม่ถูก carry → รอ 3 วิ (ragdoll phase)
+    if not getCarried(char) then
         local elapsed = 0
         while elapsed < 3 and reviveRunning do
             if not isDowned(char) then
                 isReviving = false
                 return
             end
-            if getCarried(char) then
-                carried = true
-                break
-            end
+            -- โดน carry ระหว่างรอ → ออกจาก loop ไปรอ carry หายแทน
+            if getCarried(char) then break end
             task.wait(0.1)
             elapsed = elapsed + 0.1
         end
@@ -454,18 +450,18 @@ local function handleTarget(player)
         return
     end
 
-    if carried then
-        while reviveRunning do
-            if not isDowned(char) then
-                isReviving = false
-                return
-            end
-            if not getCarried(char) then break end
-            task.wait(0.1)
-        end
+    -- ถ้าตอนนี้ถูก carry อยู่ → รอจน carry หาย
+    while reviveRunning and isDowned(char) and getCarried(char) do
+        task.wait(0.1)
     end
 
-    if not reviveRunning then
+    if not reviveRunning or not isDowned(char) then
+        isReviving = false
+        return
+    end
+
+    -- เช็ค carried อีกครั้งก่อนวาป กัน race condition
+    if getCarried(char) then
         isReviving = false
         return
     end
